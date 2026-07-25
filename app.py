@@ -1,36 +1,61 @@
- """
-MCP Server — Streamable HTTP transport (manual JSON-RPC 2.0 implementation).
-The grader connects as a standard MCP client:
-  1. POST initialize  → server capabilities
-  2. POST notifications/initialized  → 202 (no response body)
-  3. POST tools/list  → list of tools
-  4. POST tools/call  → call solve_challenge, reading X-Exam-Challenge from HTTP headers
-We implement the protocol by hand with Flask so we have direct access to
-both the JSON-RPC body AND the HTTP request headers — the standard MCP SDK
-does not expose HTTP headers to tool handlers.
-"""
 import os
 import hashlib
-import json
 import uuid
 from flask import Flask, request, jsonify, Response
-app = Flask(__name__)
-# Your registered exam email, trimmed and lowercased
-EMAIL = "25ds1000076@ds.study.iitm.ac.in"
-# A stable session ID for this server instance
-SESSION_ID = uuid.uuid4().hex
-def make_response_json(req_id, result):
-    """Build a JSON-RPC 2.0 success response."""
-    resp = jsonify({"jsonrpc": "2.0", "id": req_id, "result": result})
-    resp.headers["Content-Type"] = "application/json"
-    return resp
-def make_error_json(req_id, code, message):
-    """Build a JSON-RPC 2.0 error response."""
-    resp = jsonify({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "error": {"code": code, "message": message}
-    })
-    resp.headers["Content-Type"] = "application/json"
 
-    app.run(host="0.0.0.0", port=port)
+app = Flask(__name__)
+
+EMAIL = "25ds1000076@ds.study.iitm.ac.in"
+SESSION_ID = uuid.uuid4().hex
+
+
+@app.route("/", methods=["GET"])
+def health():
+    return "MCP Server is alive and ready!"
+
+
+@app.route("/", methods=["POST"])
+@app.route("/mcp", methods=["POST"])
+def mcp_endpoint():
+    challenge = request.headers.get("X-Exam-Challenge", "")
+    data = request.get_json(force=True, silent=True) or {}
+    method = data.get("method", "")
+    req_id = data.get("id")
+    params = data.get("params", {})
+
+    if req_id is None:
+        return Response("", status=202)
+
+    if method == "initialize":
+        resp = jsonify({"jsonrpc": "2.0", "id": req_id, "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "exam-mcp-server", "version": "1.0.0"}
+        }})
+        resp.headers["Mcp-Session-Id"] = SESSION_ID
+        return resp
+
+    if method == "tools/list":
+        return jsonify({"jsonrpc": "2.0", "id": req_id, "result": {
+            "tools": [{
+                "name": "solve_challenge",
+                "description": "Solves the exam challenge",
+                "inputSchema": {"type": "object", "properties": {}, "required": []}
+            }]
+        }})
+
+    if method == "tools/call":
+        tool_name = params.get("name", "")
+        if tool_name != "solve_challenge":
+            return jsonify({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": "Unknown tool"}})
+        answer = hashlib.sha256(f"{challenge}:{EMAIL}".encode()).hexdigest()[:16]
+        return jsonify({"jsonrpc": "2.0", "id": req_id, "result": {
+            "content": [{"type": "text", "text": answer}]
+        }})
+
+    return jsonify({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Method not found"}})
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)ort)
